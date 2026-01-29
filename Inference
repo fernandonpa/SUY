@@ -1,0 +1,72 @@
+import torch
+import numpy as np
+from sklearn.metrics import classification_report, roc_auc_score, confusion_matrix
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+def get_dae_predictions(model, X_data, scaler, device):
+    """
+    Wrapper to get probabilities from the PyTorch DAE model.
+    """
+    model.eval() # Set to evaluation mode (Critical!)
+    
+    # 1. Scale the data (MUST use the scaler fitted on Train data)
+    # Note: Use .transform(), NOT .fit_transform()
+    X_scaled = scaler.transform(X_data)
+    
+    # 2. Convert to Tensor
+    X_tensor = torch.tensor(X_scaled, dtype=torch.float32).to(device)
+    
+    # 3. Inference
+    with torch.no_grad(): # Disable gradient calculation for speed
+        # Forward pass in 'classify' mode to get raw logits
+        logits = model(X_tensor, mode='classify')
+        
+        # Apply Sigmoid to get probability (0 to 1)
+        # Note: If your model.head already has Sigmoid, remove torch.sigmoid here
+        # The architecture I gave you earlier INCLUDES Sigmoid in self.head
+        probs = logits.cpu().numpy().flatten()
+        
+    return probs
+
+# ---------------------------------------------------------
+# Step 2: Run Evaluation
+# ---------------------------------------------------------
+# Get probabilities for Test Set
+# Assumes 'model', 'scaler', and 'device' are already defined from training
+y_test_proba = get_dae_predictions(model, X_test, scaler, device)
+
+# Calculate AUC
+print(f"Test AUC Score: {roc_auc_score(y_test, y_test_proba):.4f}")
+
+# ---------------------------------------------------------
+# Step 3: Find Optimal Threshold (Critical for Imbalance)
+# ---------------------------------------------------------
+# Don't just use 0.5. Since Class 1 is rare, the optimal cut-off might be 0.1 or 0.8
+from sklearn.metrics import precision_recall_curve
+
+precisions, recalls, thresholds = precision_recall_curve(y_test, y_test_proba)
+
+# Calculate F1 Score for every possible threshold
+f1_scores = 2 * (precisions * recalls) / (precisions + recalls)
+best_idx = np.argmax(f1_scores)
+best_threshold = thresholds[best_idx]
+
+print(f"Optimal Threshold: {best_threshold:.4f}")
+
+# ---------------------------------------------------------
+# Step 4: Final Classification Report
+# ---------------------------------------------------------
+# Apply the optimal threshold to create binary predictions (0 or 1)
+y_test_pred = (y_test_proba >= best_threshold).astype(int)
+
+print("\n--- Final Test Results ---")
+print(classification_report(y_test, y_test_pred))
+
+# Confusion Matrix
+cm = confusion_matrix(y_test, y_test_pred)
+sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
+plt.xlabel('Predicted')
+plt.ylabel('Actual')
+plt.title('Confusion Matrix')
+plt.show()
