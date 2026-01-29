@@ -1,0 +1,153 @@
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, TensorDataset
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
+import numpy as np
+import copy
+
+# Check for GPU
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
+
+# ---------------------------------------------------------
+# 1. MODEL ARCHITECTURE
+# ---------------------------------------------------------
+class DAE(nn.Module):
+    def __init__(self, input_dim):
+        super(DAE, self).__init__()
+        
+        # Encoder (Compresses the Data)
+        self.encoder = nn.Sequential(
+            nn.Linear(input_dim, 256),
+            nn.BatchNorm1d(256),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(256, 64),  # Latent Representation (The "Essence")
+            nn.BatchNorm1d(64),
+            nn.ReLU()
+        )
+        
+        # Decoder (Reconstructs the Data - Used only in Pre-training)
+        self.decoder = nn.Sequential(
+            nn.Linear(64, 256),
+            nn.BatchNorm1d(256),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(256, input_dim) # Output matches Input
+        )
+        
+        # Classifier Head (Used only in Fine-tuning)
+        self.head = nn.Sequential(
+            nn.Linear(64, 32),
+            nn.ReLU(),
+            nn.Linear(32, 1),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x, mode='pretrain'):
+        encoded = self.encoder(x)
+        
+        if mode == 'pretrain':
+            # In pre-training, we try to reconstruct the input
+            return self.decoder(encoded)
+        else:
+            # In fine-tuning, we predict the Class (0 or 1)
+            return self.head(encoded)
+
+# ---------------------------------------------------------
+# 2. DATA PREPARATION (Standard Scaling is MANDATORY)
+# ---------------------------------------------------------
+# Assuming X_train, y_train are your DataFrames
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X_train)
+
+# Convert to Tensors
+X_tensor = torch.tensor(X_scaled, dtype=torch.float32).to(device)
+y_tensor = torch.tensor(y_train.values, dtype=torch.float32).unsqueeze(1).to(device)
+
+# ---------------------------------------------------------
+# 3. PHASE 1: PRE-TRAINING (Self-Supervised)
+# ---------------------------------------------------------
+# We use ALL data (even Class 0) to learn the structure.
+# We define a "Swap Noise" function to make the task harder (Denoising)
+def add_noise(x, noise_level=0.15):
+    mask = torch.rand_like(x) < noise_level
+    noise = torch.rand_like(x) # Random Gaussian noise
+    return x * (~mask) + noise * mask
+
+pretrain_loader = DataLoader(TensorDataset(X_tensor), batch_size=1024, shuffle=True)
+model = DAE(input_dim=X_train.shape[1]).to(device)
+optimizer_pre = optim.Adam(model.parameters(), lr=0.001)
+criterion_pre = nn.MSELoss() # Reconstruction Loss
+
+print("--- Phase 1: Pre-training (Learning Data Structure) ---")
+for epoch in range(20): # 20 Epochs is usually enough
+    model.train()
+    total_loss = 0
+    for batch in pretrain_loader:
+        x_batch = batch[0]
+        
+        # 1. Corrupt the input (Add Noise)
+        x_noisy = add_noise(x_batch).to(device)
+        
+        # 2. Predict the CLEAN input
+        optimizer_pre.zero_grad()
+        reconstruction = model(x_noisy, mode='pretrain')
+        
+        # 3. Calculate Loss (Compare to original CLEAN data)
+        loss = criterion_pre(reconstruction, x_batch)
+        loss.backward()
+        optimizer_pre.step()
+        
+        total_loss += loss.item()
+    
+    print(f"Epoch {epoch+1}: Reconstruction Loss = {total_loss / len(pretrain_loader):.4f}")
+
+print("Pre-training Complete. Model now 'understands' your customers.")
+
+# ---------------------------------------------------------
+# 4. PHASE 2: FINE-TUNING (Classification)
+# ---------------------------------------------------------
+# Now we train specifically for the Target.
+# Use Weighted Loss for Imbalance
+pos_weight = torch.tensor([10.0]).to(device) # Weight for Class 1 (adjust as needed)
+criterion_clf = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+
+# Optimizer for Fine-tuning (Lower Learning Rate)
+optimizer_clf = optim.Adam(model.parameters(), lr=0.0001)
+
+# Create Dataset with Labels
+train_loader = DataLoader(TensorDataset(X_tensor, y_tensor), batch_size=512, shuffle=True)
+
+print("\n--- Phase 2: Fine-Tuning (Target Prediction) ---")
+for epoch in range(15):
+    model.train()
+    total_loss = 0
+    
+    for x_batch, y_batch in train_loader:
+        optimizer_clf.zero_grad()
+        
+        # Forward pass in 'classify' mode (Uses Encoder + Head)
+        # Note: We do NOT use the decoder anymore
+        preds = model(x_batch, mode='classify')
+        
+        loss = criterion_clf(preds, y_batch)
+        loss.backward()
+        optimizer_clf.step()
+        
+        total_loss += loss.item()
+        
+    print(f"Fine-tune Epoch {epoch+1}: Classification Loss = {total_loss / len(train_loader):.4f}")
+
+# ---------------------------------------------------------
+# 5. INFERENCE (Get Probabilities)
+# ---------------------------------------------------------
+model.eval()
+with torch.no_grad():
+    # Pass your validation set here
+    # X_val_tensor = ...
+    final_probs = model(X_tensor, mode='classify').cpu().numpy()
+
+print("\nModel Ready. Use 'final_probs' for evaluation.")
