@@ -1,0 +1,40 @@
+# ---------------------------------------------------------
+# 6. FEATURE EXTRACTION
+# ---------------------------------------------------------
+def get_embeddings(model, X_data, device):
+    model.eval()
+    X_tensor = torch.tensor(X_data, dtype=torch.float32).to(device)
+    with torch.no_grad():
+        embeddings = model(X_tensor)
+    return embeddings.cpu().numpy()
+
+# Get the new 32-Dimension features
+X_train_32d = get_embeddings(model, X_train_scaled, device)
+X_val_32d = get_embeddings(model, X_val_scaled, device)
+
+print(f"New Feature Shape: {X_train_32d.shape}") # Should be (Rows, 32)
+
+# ---------------------------------------------------------
+# 7. FINAL CLASSIFIER (XGBoost)
+# ---------------------------------------------------------
+# Now XGBoost has an easier job: distinguishing clusters in metric space
+clf_xgb = xgb.XGBClassifier(
+    scale_pos_weight=10, # Still good to keep some weight
+    n_estimators=500,
+    max_depth=5,
+    learning_rate=0.05,
+    n_jobs=-1
+)
+
+print("Training XGBoost on 32D Embeddings...")
+clf_xgb.fit(X_train_32d, y_train_np)
+
+# ---------------------------------------------------------
+# 8. EVALUATION
+# ---------------------------------------------------------
+y_pred_prob = clf_xgb.predict_proba(X_val_32d)[:, 1]
+y_pred = clf_xgb.predict(X_val_32d)
+
+print("--- Final Results (Siamese + XGBoost) ---")
+print(f"AUC Score: {roc_auc_score(y_val_np, y_pred_prob):.4f}")
+print(classification_report(y_val_np, y_pred))
