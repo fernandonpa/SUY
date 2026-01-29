@@ -1,0 +1,81 @@
+import pandas as pd
+import numpy as np
+import xgboost as xgb
+from sklearn.metrics import classification_report, roc_auc_score, precision_recall_curve
+
+# ---------------------------------------------------------
+# 1. PREPARE SPECIALIZED DATASETS
+# ---------------------------------------------------------
+# We assume 'X_train' is your features and 'y_train_raw' contains 'approved', 'denied', or NaN
+# Note: You need the raw labels (text) for this step, not just 0/1
+
+# Expert A Data: Ignore 'denied' (Treat them as noise/remove them) to learn purely "Approved" patterns
+mask_A = y_train_raw != 'denied'
+X_train_A = X_train[mask_A]
+y_train_A = np.where(y_train_raw[mask_A] == 'approved', 1, 0)
+
+# Expert B Data: Ignore 'approved' to learn purely "Denied" patterns
+mask_B = y_train_raw != 'approved'
+X_train_B = X_train[mask_B]
+y_train_B = np.where(y_train_raw[mask_B] == 'denied', 1, 0)
+
+# Validation Target: Did they apply? (Approved OR Denied = 1)
+y_val_binary = np.where(y_val_raw.notna(), 1, 0)
+
+# ---------------------------------------------------------
+# 2. TRAIN EXPERT A (The "Prime" Hunter)
+# ---------------------------------------------------------
+clf_prime = xgb.XGBClassifier(
+    scale_pos_weight=20, # Adjust based on 0:1 ratio
+    n_estimators=300,
+    max_depth=5,
+    learning_rate=0.05,
+    n_jobs=-1,
+    random_state=42
+)
+
+print("Training Expert A (Approved vs Normal)...")
+clf_prime.fit(X_train_A, y_train_A)
+
+# ---------------------------------------------------------
+# 3. TRAIN EXPERT B (The "Sub-Prime" Hunter)
+# ---------------------------------------------------------
+clf_subprime = xgb.XGBClassifier(
+    scale_pos_weight=20, 
+    n_estimators=300,
+    max_depth=5,
+    learning_rate=0.05, # Maybe higher if patterns are stronger
+    n_jobs=-1,
+    random_state=42
+)
+
+print("Training Expert B (Denied vs Normal)...")
+clf_subprime.fit(X_train_B, y_train_B)
+
+# ---------------------------------------------------------
+# 4. PARALLEL INFERENCE & FUSION
+# ---------------------------------------------------------
+# Get probabilities for validation set
+prob_prime = clf_prime.predict_proba(X_val)[:, 1]
+prob_subprime = clf_subprime.predict_proba(X_val)[:, 1]
+
+# FUSION: Max Probability
+# Logic: "If either expert is confident, we flag it."
+final_prob = np.maximum(prob_prime, prob_subprime)
+
+# ---------------------------------------------------------
+# 5. EVALUATION
+# ---------------------------------------------------------
+print(f"\nFinal Combined AUC: {roc_auc_score(y_val_binary, final_prob):.4f}")
+
+# Find Optimal Threshold on the COMBINED score
+p, r, t = precision_recall_curve(y_val_binary, final_prob)
+f1 = 2 * (p * r) / (p + r)
+best_thresh = t[np.argmax(f1)]
+
+print(f"Optimal Threshold: {best_thresh:.4f}")
+
+# Final Binary Predictions
+final_preds = (final_prob >= best_thresh).astype(int)
+print("\n--- Final Classification Report ---")
+print(classification_report(y_val_binary, final_preds))
