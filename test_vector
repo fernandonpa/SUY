@@ -1,0 +1,45 @@
+from sklearn.metrics import classification_report, confusion_matrix, accuracy_score
+import numpy as np
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+# ---------------------------------------------------------
+# 1. GENERATE PREDICTIONS
+# ---------------------------------------------------------
+# Logic: If distance is smaller than radius, it's inside the sphere (Class 1)
+# We convert the boolean (True/False) to int (1/0)
+y_pred_class_1 = (distance_test_1 <= radius_sq).astype(int)  # These SHOULD be 1
+y_pred_class_0 = (distance_test_0 <= radius_sq).astype(int)  # These SHOULD be 0
+
+# ---------------------------------------------------------
+# 2. CREATE GROUND TRUTH LABELS
+# ---------------------------------------------------------
+# We know x_test_1 contains only actual Approved users (1)
+y_true_class_1 = np.ones(len(distance_test_1))
+
+# We know x_test_0 contains only actual Not Approved users (0)
+y_true_class_0 = np.zeros(len(distance_test_0))
+
+# ---------------------------------------------------------
+# 3. COMBINE EVERYTHING
+# ---------------------------------------------------------
+# Concatenate arrays to get the full Test Set
+y_pred_final = np.concatenate([y_pred_class_1, y_pred_class_0])
+y_true_final = np.concatenate([y_true_class_1, y_true_class_0])
+
+# ---------------------------------------------------------
+# 4. EVALUATE
+# ---------------------------------------------------------
+print("--- Final Test Set Evaluation ---")
+print(f"Accuracy: {accuracy_score(y_true_final, y_pred_final):.4f}")
+print("\nClassification Report:")
+print(classification_report(y_true_final, y_pred_final))
+
+# Visualizing Confusion Matrix
+plt.figure(figsize=(6, 4))
+cm = confusion_matrix(y_true_final, y_pred_final)
+sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', cbar=False)
+plt.xlabel('Predicted (Inside Sphere = 1)')
+plt.ylabel('Actual')
+plt.title('Confusion Matrix: Centroid Model')
+plt.show()
