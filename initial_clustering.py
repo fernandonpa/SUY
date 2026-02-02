@@ -66,6 +66,40 @@ def engineer_marketing_features(df):
 # df_engineered = engineer_marketing_features(raw_df)
 # print("Feature Engineering Complete.")
 
+# CELL 1.5: SANITIZATION (Add this immediately after your engineering cell)
+
+def sanitize_features(df):
+    """
+    Cleans infinite values created by Log transforms or Division by Zero.
+    Replaces infinity with the maximum finite value found in that column.
+    """
+    df_clean = df.copy()
+    
+    # 1. Replace Infinite values with NaN first
+    df_clean = df_clean.replace([np.inf, -np.inf], np.nan)
+    
+    # 2. Fill NaN with 0 (assuming NaN means 'No Activity' in this context)
+    # For Log columns, NaN usually came from log(0), so filling with 0 is mathematically safe.
+    df_clean = df_clean.fillna(0)
+    
+    # 3. Clip extreme values (Safety net for float32 overflow)
+    # This prevents values "too large for float32"
+    num_cols = df_clean.select_dtypes(include=[np.number]).columns
+    for col in num_cols:
+        # Cap values at the 99.9th percentile to prevent massive outliers from breaking Sklearn
+        limit = df_clean[col].quantile(0.999)
+        if limit > 0: # Only cap if the limit is positive
+             df_clean[col] = df_clean[col].clip(upper=limit)
+             
+    return df_clean
+
+# Update your execution flow:
+df_engineered = engineer_marketing_features(df)
+df_clean = sanitize_features(df_engineered) # <--- INSERT THIS STEP
+
+# Now pass df_clean to the selection function
+final_features = select_optimal_features(df_clean, candidate_pool)
+
 # CELL 3: STATISTICAL & ML FEATURE SELECTION
 def select_optimal_features(df, candidate_cols):
     """
